@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: LakeSoul Contributors
+// SPDX-FileCopyrightText: 2025 LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -34,6 +34,10 @@ pub async fn exec_command(
             scale_factor,
             num_parts,
         } => {
+            println!(
+                "start to generate tpch data scale_factor:{} num_parts:{}",
+                scale_factor, num_parts
+            );
             let mut all = vec![];
             let all_targets = [
                 "part".to_string(),

@@ -13,9 +13,9 @@ SPDX-License-Identifier: Apache-2.0
     <inceptionYear>2022</inceptionYear>
     <modules>
         <module>lakesoul-common</module>
+        <module>native-io/lakesoul-io-java</module>
         <module>lakesoul-spark</module>
         <module>lakesoul-flink</module>
-        <module>native-io/lakesoul-io-java</module>
         <module>lakesoul-presto</module>
     </modules>
     <packaging>pom</packaging>
@@ -129,6 +129,15 @@ SPDX-License-Identifier: Apache-2.0
                 </plugins>
             </build>
         </profile>
+        <profile>
+            <id>gluten</id>
+            <activation>
+                <activeByDefault>false</activeByDefault>
+            </activation>
+            <modules>
+                <module>lakesoul-spark-gluten</module>
+            </modules>
+        </profile>
     </profiles>
 
     <build>
@@ -152,15 +161,14 @@ SPDX-License-Identifier: Apache-2.0
                 </configuration>
             </plugin>
             <plugin>
-                <groupId>org.sonatype.plugins</groupId>
-                <artifactId>nexus-staging-maven-plugin</artifactId>
-                <version>1.6.7</version>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>0.8.0</version>
                 <extensions>true</extensions>
                 <configuration>
-                    <serverId>ossrh</serverId>
-                    <nexusUrl>https://s01.oss.sonatype.org/</nexusUrl>
-                    <autoReleaseAfterClose>true</autoReleaseAfterClose>
-                    <stagingProgressTimeoutMinutes>15</stagingProgressTimeoutMinutes>
+                    <publishingServerId>central</publishingServerId>
+                    <autoPublish>true</autoPublish>
+                    <waitUntil>published</waitUntil>
                 </configuration>
             </plugin>
             <plugin>

@@ -9,8 +9,7 @@ use arrow_array::record_batch;
 use chrono::Days;
 use datafusion::assert_batches_eq;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
-use lakesoul_flight::Claims;
-use lakesoul_metadata::MetaDataClient;
+use lakesoul_metadata::{Claims, JwtServer, MetaDataClient};
 use test_utils::{TestServer, build_client, handle_sql, ingest};
 use tokio::time::sleep;
 use tracing::info;
@@ -335,7 +334,6 @@ async fn test_flight_sql_obj_store() {
     let meta_client = Arc::new(MetaDataClient::from_env().await.unwrap());
 
     let core_args = CoreArgs {
-        lakesoul_home: "".to_string(),
         warehouse_prefix: Some("s3://lakesoul-bucket/flight-test".to_string()),
         endpoint: Some("http://localhost:9000".to_string()),
         s3_bucket: Some("lakesoul-test-bucket".to_string()),

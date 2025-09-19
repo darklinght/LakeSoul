@@ -8,19 +8,15 @@ use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-use arrow::{
-    array::ArrayRef,
-    datatypes::SchemaRef,
-    record_batch::RecordBatch,
-    row::{Row, Rows},
-};
+use crate::sorted_merge::cursor::CursorValues;
+use arrow::{array::ArrayRef, datatypes::SchemaRef, record_batch::RecordBatch};
 use arrow_array::Array;
 use arrow_cast::pretty::pretty_format_batches;
 use smallvec::{SmallVec, smallvec};
 
 /// A range in one arrow::record_batch::RecordBatch with same sorted primary key
 /// The minimum unit at SortedStreamMerger
-pub struct SortKeyBatchRange {
+pub struct SortKeyBatchRange<C: CursorValues> {
     /// The begin row in this batch, included
     pub(crate) begin_row: usize,
     /// The end row in this batch, not included
@@ -32,10 +28,10 @@ pub struct SortKeyBatchRange {
     /// The source reference batch
     pub(crate) batch: Arc<RecordBatch>,
     /// The reference of rows in this batch
-    pub(crate) rows: Arc<Rows>,
+    pub(crate) rows: Arc<C>,
 }
 
-impl SortKeyBatchRange {
+impl<C: CursorValues> SortKeyBatchRange<C> {
     /// Create a new SortKeyBatchRange
     pub fn new(
         begin_row: usize,
@@ -43,7 +39,7 @@ impl SortKeyBatchRange {
         stream_idx: usize,
         batch_idx: usize,
         batch: Arc<RecordBatch>,
-        rows: Arc<Rows>,
+        rows: Arc<C>,
     ) -> Self {
         SortKeyBatchRange {
             begin_row,
@@ -61,7 +57,7 @@ impl SortKeyBatchRange {
         stream_idx: usize,
         batch_idx: usize,
         batch: Arc<RecordBatch>,
-        rows: Arc<Rows>,
+        rows: Arc<C>,
     ) -> Self {
         let mut range = SortKeyBatchRange {
             begin_row,
@@ -85,11 +81,6 @@ impl SortKeyBatchRange {
         self.batch.num_columns()
     }
 
-    /// Return the current row of this range
-    pub(crate) fn current(&self) -> Row<'_> {
-        self.rows.row(self.begin_row)
-    }
-
     #[inline(always)]
     /// Return the stream index of this range
     pub fn stream_idx(&self) -> usize {
@@ -104,13 +95,13 @@ impl SortKeyBatchRange {
 
     #[inline(always)]
     /// Returns the cloned current batch range, and advances the current range to the next range with next sort key
-    pub fn advance(&mut self) -> SortKeyBatchRange {
+    pub fn advance(&mut self) -> SortKeyBatchRange<C> {
         let current = self.clone();
         self.begin_row = self.end_row;
         if !self.is_finished() {
             while self.end_row < self.batch.num_rows() {
                 // check if next row in this batch has same sort key
-                if self.rows.row(self.end_row) == self.rows.row(self.begin_row) {
+                if C::eq(&self.rows, self.end_row, &self.rows, self.begin_row) {
                     self.end_row += 1;
                 } else {
                     break;
@@ -142,7 +133,7 @@ impl SortKeyBatchRange {
     }
 }
 
-impl Debug for SortKeyBatchRange {
+impl<C: CursorValues> Debug for SortKeyBatchRange<C> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
@@ -160,7 +151,7 @@ impl Debug for SortKeyBatchRange {
     }
 }
 
-impl Clone for SortKeyBatchRange {
+impl<C: CursorValues> Clone for SortKeyBatchRange<C> {
     fn clone(&self) -> Self {
         SortKeyBatchRange::new(
             self.begin_row,
@@ -173,24 +164,23 @@ impl Clone for SortKeyBatchRange {
     }
 }
 
-impl PartialEq for SortKeyBatchRange {
+impl<C: CursorValues> PartialEq for SortKeyBatchRange<C> {
     fn eq(&self, other: &Self) -> bool {
-        self.current() == other.current()
+        C::eq(&self.rows, self.begin_row, &other.rows, other.begin_row)
     }
 }
 
-impl Eq for SortKeyBatchRange {}
+impl<C: CursorValues> Eq for SortKeyBatchRange<C> {}
 
-impl PartialOrd for SortKeyBatchRange {
+impl<C: CursorValues> PartialOrd for SortKeyBatchRange<C> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for SortKeyBatchRange {
+impl<C: CursorValues> Ord for SortKeyBatchRange<C> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.current()
-            .cmp(&other.current())
+        C::compare(&self.rows, self.begin_row, &other.rows, other.begin_row)
             .then_with(|| self.stream_idx.cmp(&other.stream_idx))
     }
 }
@@ -228,13 +218,15 @@ impl Clone for SortKeyArrayRange {
     }
 }
 
+pub(crate) type SortKeyArrayRangeVec = SmallVec<[SortKeyArrayRange; 16]>;
+
 /// Multiple ranges with same sorted primary key from variant source record_batch.
 /// These ranges will be merged into ONE row of target record_batch finally.
 #[derive(Debug, Clone)]
-pub struct SortKeyBatchRanges {
+pub struct SortKeyBatchRanges<C: CursorValues> {
     /// vector with length=column_num
     /// each element of this vector is a collection corresponding to the specific column of SortKeyArrayRange to be merged
-    pub(crate) sort_key_array_ranges: Vec<SmallVec<[SortKeyArrayRange; 4]>>,
+    pub(crate) sort_key_array_ranges: Vec<SortKeyArrayRangeVec>,
 
     /// fields_index_map from source schemas to target schema which vector index = stream_idx
     fields_map: Arc<Vec<Vec<usize>>>,
@@ -243,14 +235,14 @@ pub struct SortKeyBatchRanges {
     pub(crate) schema: SchemaRef,
 
     /// The current batch range for collecting SortKeyArrayRange of current primary key
-    pub(crate) batch_range: Option<SortKeyBatchRange>,
+    pub(crate) batch_range: Option<SortKeyBatchRange<C>>,
 }
 
-impl SortKeyBatchRanges {
+impl<C: CursorValues> SortKeyBatchRanges<C> {
     pub fn new(
         schema: SchemaRef,
         fields_map: Arc<Vec<Vec<usize>>>,
-    ) -> SortKeyBatchRanges {
+    ) -> SortKeyBatchRanges<C> {
         SortKeyBatchRanges {
             sort_key_array_ranges: vec![smallvec![]; schema.fields().len()],
             fields_map,
@@ -264,12 +256,12 @@ impl SortKeyBatchRanges {
         self.schema.clone()
     }
 
-    pub fn column(&self, column_idx: usize) -> &SmallVec<[SortKeyArrayRange; 4]> {
+    pub fn column(&self, column_idx: usize) -> &SortKeyArrayRangeVec {
         &self.sort_key_array_ranges[column_idx]
     }
 
     /// add one SortKeyBatchRange into SortKeyBatchRanges, collect SortKeyArrayRange of each column into sort_key_array_ranges
-    pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
+    pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange<C>) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
         }
@@ -286,16 +278,16 @@ impl SortKeyBatchRanges {
     }
 
     /// update the current batch range
-    pub fn set_batch_range(&mut self, batch_range: Option<SortKeyBatchRange>) {
+    pub fn set_batch_range(&mut self, batch_range: Option<SortKeyBatchRange<C>>) {
         self.batch_range = batch_range
     }
 
     /// check if the current batch range matches the given range
-    pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
+    pub fn match_row(&self, range: &SortKeyBatchRange<C>) -> bool {
         match &self.batch_range {
             // return true if no current batch range
             None => true,
-            Some(batch_range) => batch_range.current() == range.current(),
+            Some(batch_range) => batch_range == range,
         }
     }
 }
@@ -316,14 +308,17 @@ pub struct UseLastSortKeyArrayRange {
 }
 
 impl UseLastSortKeyArrayRange {
+    #[inline]
     pub fn array(&self) -> ArrayRef {
         unsafe { self.batch.columns().get_unchecked(self.column_idx).clone() }
     }
 
+    #[inline]
     pub fn array_ref(&self) -> &dyn Array {
         unsafe { self.batch.columns().get_unchecked(self.column_idx).as_ref() }
     }
 
+    #[inline]
     pub fn array_ref_by_col(&self, column_idx: usize) -> ArrayRef {
         unsafe { self.batch.columns().get_unchecked(column_idx).clone() }
     }
@@ -344,57 +339,52 @@ impl Clone for UseLastSortKeyArrayRange {
 /// Multiple ranges with same sorted primary key from variant source record_batch.
 /// These ranges will be merged into ONE row of target record_batch finally.
 /// This is used for case of UseLast MergeOperator.
-#[derive(Debug, Clone)]
-pub struct UseLastSortKeyBatchRanges {
-    /// fields_index_map from source schemas to target schema which vector index = stream_idx
-    fields_map: Arc<Vec<Vec<usize>>>,
-
+#[derive(Debug, Clone, Default)]
+pub struct UseLastSortKeyBatchRanges<C: CursorValues, const IS_PARTIAL_MERGE: bool> {
     /// The current batch range for collecting UseLastSortKeyArrayRange of current primary key
-    current_batch_range: Option<SortKeyBatchRange>,
+    current_batch_range: Option<SortKeyBatchRange<C>>,
 
     /// UseLastSortKeyArrayRange for each column of source schema
-    last_index_of_array: Vec<Option<UseLastSortKeyArrayRange>>,
-
-    /// whether the current batch range is partial merge
-    is_partial_merge: bool,
+    last_index_of_array: SmallVec<[Option<UseLastSortKeyArrayRange>; 1]>,
 }
 
-impl UseLastSortKeyBatchRanges {
-    pub fn new(
-        schema: SchemaRef,
-        fields_map: Arc<Vec<Vec<usize>>>,
-        is_partial_merge: bool,
-    ) -> UseLastSortKeyBatchRanges {
-        let last_index_of_array = if is_partial_merge {
-            vec![None; schema.fields().len()]
+impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
+    UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE>
+{
+    pub fn new(field_num: usize) -> UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE> {
+        let last_index_of_array = if IS_PARTIAL_MERGE {
+            smallvec![None; field_num]
         } else {
-            vec![None; 1]
+            smallvec![None; 1]
         };
         UseLastSortKeyBatchRanges {
-            fields_map,
             current_batch_range: None,
             last_index_of_array,
-            is_partial_merge,
         }
     }
 
-    pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
+    #[inline]
+    pub fn match_row(&self, range: &SortKeyBatchRange<C>) -> bool {
         match &self.current_batch_range {
             // return true if no current batch range
             None => true,
-            Some(batch_range) => batch_range.current() == range.current(),
+            Some(batch_range) => batch_range == range,
         }
     }
 
     /// add one SortKeyBatchRange into UseLastSortKeyBatchRanges,
     /// collect UseLastSortKeyArrayRange of each column into last_index_of_array
-    pub fn add_range_in_batch(&mut self, range: &SortKeyBatchRange) {
+    pub fn add_range_in_batch(
+        &mut self,
+        range: &SortKeyBatchRange<C>,
+        fields_map: &Vec<Vec<usize>>,
+    ) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
         }
         unsafe {
-            if self.is_partial_merge {
-                let range_col = self.fields_map.get_unchecked(range.stream_idx());
+            if IS_PARTIAL_MERGE {
+                let range_col = fields_map.get_unchecked(range.stream_idx());
                 for column_idx in 0..range.columns() {
                     let target_schema_idx = range_col.get_unchecked(column_idx);
                     *self
@@ -422,19 +412,22 @@ impl UseLastSortKeyBatchRanges {
         }
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.current_batch_range.is_none()
     }
 
     /// update the current batch range
-    pub fn set_batch_range(&mut self, batch_range: Option<SortKeyBatchRange>) {
+    #[inline]
+    pub fn set_batch_range(&mut self, batch_range: Option<SortKeyBatchRange<C>>) {
         self.current_batch_range = batch_range
     }
 
     /// return the UseLastSortKeyArrayRange of specific column
+    #[inline]
     pub fn column(&self, column_idx: usize) -> &Option<UseLastSortKeyArrayRange> {
         unsafe {
-            if self.is_partial_merge {
+            if IS_PARTIAL_MERGE {
                 self.last_index_of_array.get_unchecked(column_idx)
             } else {
                 self.last_index_of_array.get_unchecked(0)
@@ -443,5 +436,6 @@ impl UseLastSortKeyBatchRanges {
     }
 }
 
-pub type SortKeyBatchRangesRef = Arc<SortKeyBatchRanges>;
-pub type UseLastSortKeyBatchRangesRef = Arc<UseLastSortKeyBatchRanges>;
+pub type SortKeyBatchRangesRef<C> = Arc<SortKeyBatchRanges<C>>;
+pub type UseLastSortKeyBatchRangesRef<C, const IS_PARTIAL_MERGE: bool> =
+    Arc<UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE>>;

@@ -16,13 +16,7 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.arrow.ArrowUtils;
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
-import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
-import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
-import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
-import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.internal.SQLConf;
-import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.*;
@@ -33,8 +27,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-
-import static org.apache.spark.sql.types.DataTypes.LongType;
 
 
 /**
@@ -93,8 +85,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
      * code between the path that uses the MR decoders and the vectorized ones.
      */
     private ColumnarBatch columnarBatch;
-
-    private WritableColumnVector[] partitionColumnVectors = null;
 
     private StructType partitionColumns = null;
 
@@ -164,7 +154,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         }
         this.mergeOps = mergeOperatorInfo;
         this.requestSchema = requestSchema == null ? sparkSchema : requestSchema;
-        initializeInternal();
         TaskContext.get().addTaskCompletionListener(context -> {
             try {
                 close();
@@ -277,7 +266,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
         totalRowCount = 0;
         nativeReader = new LakeSoulArrowReader(reader, awaitTimeout);
-
     }
 
     private String filterEncode(FilterPredicate filter) {
@@ -304,30 +292,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
                 newSchema = newSchema.add(partitionField);
             }
             requestSchema = newSchema;
-        } else {
-            partitionColumns = new StructType(new StructField[]{new StructField("empty row", LongType, false, Metadata.empty())});
-
-            partitionValues = new GenericInternalRow(new Long[]{0L});
-            if (partitionColumnVectors != null) {
-                for (WritableColumnVector c : partitionColumnVectors) {
-                    c.close();
-                }
-            }
-            if (memMode == MemoryMode.OFF_HEAP) {
-                partitionColumnVectors = OffHeapColumnVector.allocateColumns(capacity, partitionColumns);
-            } else {
-                partitionColumnVectors = OnHeapColumnVector.allocateColumns(capacity, partitionColumns);
-            }
-            for (int i = 0; i < partitionColumns.fields().length; i++) {
-                ColumnVectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
-                partitionColumnVectors[i].setIsConstant();
-            }
         }
         recreateNativeReader();
-    }
-
-    private void initBatch() throws IOException {
-        initBatch(MEMORY_MODE, null, null);
     }
 
     public void initBatch(StructType partitionColumns, InternalRow partitionValues) throws IOException {
@@ -350,10 +316,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
             VectorSchemaRoot nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
             int rowCount = nextVectorSchemaRoot.getRowCount();
             if (nextVectorSchemaRoot.getSchema().getFields().isEmpty()) {
-                if (partitionColumnVectors == null) {
-                    throw new IOException("NativeVectorizedReader has not been initialized");
-                }
-                columnarBatch = new ColumnarBatch(partitionColumnVectors, rowCount);
+                columnarBatch = new ColumnarBatch(new ColumnVector[]{}, rowCount);
             } else {
                 nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
                 columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);
@@ -362,10 +325,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         } else {
             return false;
         }
-    }
-
-    private void initializeInternal() throws IOException, UnsupportedOperationException {
-        initBatch();
     }
 
     private LakeSoulArrowReader nativeReader = null;

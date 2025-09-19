@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use arrow_array::{ArrayRef, StringArray};
@@ -117,7 +121,7 @@ fn main() -> Result<()> {
             // .with_aux_sort_column("col2".to_string())
             // .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 48))
             // .set_dynamic_partition(true)
-            .with_hash_bucket_num(4)
+            .with_hash_bucket_num(4.to_string())
             // .with_max_file_size(1024 * 1024 * 32)
             .build();
 

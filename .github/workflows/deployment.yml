@@ -88,9 +88,9 @@ jobs:
     steps:
       - name: Install automake
         run: brew install automake
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '11'
           distribution: 'temurin'
@@ -152,23 +152,24 @@ jobs:
           name: lakesoul-nativemetadata-x86_64-pc-windows-msvc
           path: ./rust/target/release/
       - name: Set up JDK 11
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '11'
           distribution: 'temurin'
           cache: maven
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Release to Maven Central Repository
-        uses: samuelmeuli/action-maven-publish@v1
-        with:
-          gpg_private_key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
-          gpg_passphrase: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
-          nexus_username: ${{ secrets.OSSRH_USERNAME }}
-          nexus_password: ${{ secrets.OSSRH_TOKEN }}
-          maven_goals_phases: "deploy"
-          maven_args: "-DskipTests -Dmaven.test.skip=true"
-          maven_profiles: "cross-build,release-sign-artifacts"
+        run: mvn --batch-mode deploy -Pcross-build,release-sign-artifacts -DskipTests -Dmaven.test.skip=true
+        env:
+          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+          GPG_PASSPHRASE: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
